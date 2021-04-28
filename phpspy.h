@@ -144,6 +144,7 @@ typedef struct trace_glopeek_s {
 
 typedef struct trace_target_s {
     pid_t pid;
+    char phpv[4];
     uint64_t executor_globals_addr;
     uint64_t sapi_globals_addr;
     uint64_t alloc_globals_addr;
@@ -189,6 +190,7 @@ extern regex_t *opt_filter_re;
 extern int opt_filter_negate;
 extern int opt_verbose_fields_pid;
 extern int opt_verbose_fields_ts;
+extern int opt_verbose_fields_phpv;
 extern int opt_continue_on_error;
 extern int opt_fout_buffer_size;
 extern long opt_time_limit_ms;
