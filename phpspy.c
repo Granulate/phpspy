@@ -27,12 +27,12 @@ regex_t *opt_filter_re = NULL;
 int opt_filter_negate = 0;
 int opt_verbose_fields_pid = 0;
 int opt_verbose_fields_ts = 0;
+int opt_verbose_fields_phpv = 0;
 int (*opt_event_handler)(struct trace_context_s *context, int event_type) = event_handler_fout;
 int opt_continue_on_error = 0;
 int opt_fout_buffer_size = 4096;
 
 int done = 0;
-int (*do_trace_ptr)(trace_context_t *context) = NULL;
 varpeek_entry_t *varpeek_map = NULL;
 glopeek_entry_t *glopeek_map = NULL;
 regex_t filter_re;
@@ -305,8 +305,10 @@ static void parse_opts(int argc, char **argv) {
                     switch (optarg[i]) {
                         case 'p': opt_verbose_fields_pid = 1; break;
                         case 't': opt_verbose_fields_ts  = 1; break;
+                        case 'v': opt_verbose_fields_phpv  = 1; break;
                         case 'P': opt_verbose_fields_pid = 0; break;
                         case 'T': opt_verbose_fields_ts  = 0; break;
+                        case 'V': opt_verbose_fields_phpv = 1; break;
                     }
                 }
                 break;
@@ -347,6 +349,7 @@ int main_pid(pid_t pid) {
     trace_context_t context;
     struct timespec start_time, end_time, sleep_time, _stop_time, limit_time;
     struct timespec *stop_time;
+    int (*do_trace_ptr)(trace_context_t * context) = NULL;
 
     memset(&context, 0, sizeof(trace_context_t));
     context.target.pid = pid;
@@ -358,21 +361,18 @@ int main_pid(pid_t pid) {
     do_trace_ptr = do_trace;
     #else
 
-    if (strcmp(opt_phpv, "auto") == 0) {
-        try_get_php_version(&context.target);
-    }
-
-    if (strcmp("70", opt_phpv) == 0) {
+    try_get_php_version(&context.target);
+    if (strcmp("70", context.target.phpv) == 0) {
         do_trace_ptr = do_trace_70;
-    } else if (strcmp("71", opt_phpv) == 0) {
+    } else if (strcmp("71", context.target.phpv) == 0) {
         do_trace_ptr = do_trace_71;
-    } else if (strcmp("72", opt_phpv) == 0) {
+    } else if (strcmp("72", context.target.phpv) == 0) {
         do_trace_ptr = do_trace_72;
-    } else if (strcmp("73", opt_phpv) == 0) {
+    } else if (strcmp("73", context.target.phpv) == 0) {
         do_trace_ptr = do_trace_73;
-    } else if (strcmp("74", opt_phpv) == 0) {
+    } else if (strcmp("74", context.target.phpv) == 0) {
         do_trace_ptr = do_trace_74;
-    } else if (strcmp("80", opt_phpv) == 0) {
+    } else if (strcmp("80", context.target.phpv) == 0) {
         do_trace_ptr = do_trace_80;
     } else {
         do_trace_ptr = do_trace_72;
@@ -749,13 +749,13 @@ static void try_get_php_version(trace_target_t *target) {
         pclose(pcmd);
     }
 
-    if      (strncmp(phpv, "7.0", 3) == 0) opt_phpv = "70";
-    else if (strncmp(phpv, "7.1", 3) == 0) opt_phpv = "71";
-    else if (strncmp(phpv, "7.2", 3) == 0) opt_phpv = "72";
-    else if (strncmp(phpv, "7.3", 3) == 0) opt_phpv = "73";
-    else if (strncmp(phpv, "7.4", 3) == 0) opt_phpv = "74";
-    else if (strncmp(phpv, "8.0", 3) == 0) opt_phpv = "80";
-    else if (strncmp(phpv, "8.1", 3) == 0) opt_phpv = "80";
+    if      (strncmp(phpv, "7.0", 3) == 0) strcpy(target->phpv, "70");
+    else if (strncmp(phpv, "7.1", 3) == 0) strcpy(target->phpv, "71");
+    else if (strncmp(phpv, "7.2", 3) == 0) strcpy(target->phpv, "72");
+    else if (strncmp(phpv, "7.3", 3) == 0) strcpy(target->phpv, "73");
+    else if (strncmp(phpv, "7.4", 3) == 0) strcpy(target->phpv, "74");
+    else if (strncmp(phpv, "8.0", 3) == 0) strcpy(target->phpv, "80");
+    else if (strncmp(phpv, "8.1", 3) == 0) strcpy(target->phpv, "80");
     else log_error("try_get_php_version: Unrecognized PHP version\n");
 }
 
