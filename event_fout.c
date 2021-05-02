@@ -127,6 +127,10 @@ int event_handler_fout(struct trace_context_s *context, int event_type) {
                     try_break(rv, event_handler_fout_snprintf(&udata->cur, &udata->rem, &len, 1, "# pid = %d", context->target.pid));
                     try_break(rv, event_handler_fout_snprintf(&udata->cur, &udata->rem, &len, 0, "%c", opt_frame_delim));
                 }
+                if (opt_verbose_fields_phpv) {
+                    try_break(rv, event_handler_fout_snprintf(&udata->cur, &udata->rem, &len, 1, "# phpv = %s", context->target.phpv));
+                    try_break(rv, event_handler_fout_snprintf(&udata->cur, &udata->rem, &len, 0, "%c", opt_frame_delim));
+                }
                 try_break(rv, event_handler_fout_snprintf(&udata->cur, &udata->rem, &len, 0, "%c", opt_trace_delim));
             } while (0);
             try(rv, event_handler_fout_write(udata));
