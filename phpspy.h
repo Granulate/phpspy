@@ -192,6 +192,11 @@ extern int opt_verbose_fields_ts;
 extern int opt_continue_on_error;
 extern int opt_fout_buffer_size;
 extern long opt_time_limit_ms;
+extern int in_pgrep_mode;
+extern int opt_signaled_output;
+
+extern int pipe_fd_read;
+extern int pipe_fd_write;
 
 extern int main_pgrep();
 extern int main_pid(pid_t pid);
@@ -200,6 +205,7 @@ extern int main_top(int argc, char **argv);
 extern void usage(FILE *fp, int exit_code);
 extern int get_symbol_addr(addr_memo_t *memo, pid_t pid, const char *symbol, uint64_t *raddr);
 extern int event_handler_fout(struct trace_context_s *context, int event_type);
+extern int event_handler_fout_open(int *fd);
 extern int event_handler_callgrind(struct trace_context_s *context, int event_type);
 extern void write_done_pipe();
 extern void log_error(const char *fmt, ...);

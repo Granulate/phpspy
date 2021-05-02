@@ -30,6 +30,7 @@ int opt_verbose_fields_ts = 0;
 int (*opt_event_handler)(struct trace_context_s *context, int event_type) = event_handler_fout;
 int opt_continue_on_error = 0;
 int opt_fout_buffer_size = 4096;
+int opt_signaled_output = 0;
 
 int done = 0;
 int (*do_trace_ptr)(trace_context_t *context) = NULL;
@@ -171,6 +172,8 @@ void usage(FILE *fp, int exit_code) {
     fprintf(fp, "                                       post|get|cookie|server|files|globals\n");
     fprintf(fp, "                                       e.g., server.REQUEST_TIME\n");
     fprintf(fp, "  -t, --top                          Show dynamic top-like output\n");
+    fprintf(fp, "  -Y, --signaled-output              Signaled output (write output only upon SIGUSR2)\n");
+
     cleanup();
     exit(exit_code);
 }
@@ -239,6 +242,7 @@ static void parse_opts(int argc, char **argv) {
         { "peek-var",              required_argument, NULL, 'e' },
         { "peek-global",           required_argument, NULL, 'g' },
         { "top",                   no_argument,       NULL, 't' },
+        { "signaled-output",       no_argument,       NULL, 'Y' },
         { 0,                       0,                 0,    0   }
     };
     /* Parse options until the first non-option argument is reached. Effectively
@@ -251,7 +255,7 @@ static void parse_opts(int argc, char **argv) {
     while (
         optind < argc
         && argv[optind][0] == '-'
-        && (c = getopt_long(argc, argv, "hp:P:T:te:s:H:V:l:i:n:r:mo:O:E:x:a:1b:f:F:d:cj:#:@vSe:g:t", long_opts, NULL)) != -1
+        && (c = getopt_long(argc, argv, "hp:P:T:te:s:H:V:l:i:n:r:mo:O:E:x:a:1b:f:F:d:cj:#:@vSe:g:t:Y", long_opts, NULL)) != -1
     ) {
         switch (c) {
             case 'h': usage(stdout, 0); break;
@@ -338,6 +342,7 @@ static void parse_opts(int argc, char **argv) {
             case 'e': varpeek_add(optarg); break;
             case 'g': glopeek_add(optarg); break;
             case 't': opt_top_mode = 1; break;
+            case 'Y': opt_signaled_output = 1; break;
         }
     }
 }

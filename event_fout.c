@@ -10,7 +10,6 @@ typedef struct event_handler_fout_udata_s {
 
 static int event_handler_fout_write(event_handler_fout_udata_t *udata);
 static int event_handler_fout_snprintf(char **s, size_t *n, size_t *ret_len, int repl_delim, const char *fmt, ...);
-static int event_handler_fout_open(int *fd);
 
 int event_handler_fout(struct trace_context_s *context, int event_type) {
     int rv, fd;
@@ -147,9 +146,18 @@ static int event_handler_fout_write(event_handler_fout_udata_t *udata) {
 
     if (write_len < 1) {
         /* nothing to write */
-    } else if (write(udata->fd, udata->buf, write_len) != write_len) {
-        log_error("event_handler_fout: Write failed (%s)\n", errno != 0 ? strerror(errno) : "partial");
-        return PHPSPY_ERR;
+    } else {
+        int out_fd;
+        if (in_pgrep_mode && opt_signaled_output) {
+            out_fd = pipe_fd_write;
+        }
+        else {
+            out_fd = udata->fd;
+        }
+        if (write(out_fd, udata->buf, write_len) != write_len) {
+            log_error("event_handler_fout: Write failed (%s)\n", errno != 0 ? strerror(errno) : "partial");
+            return PHPSPY_ERR;
+        }
     }
 
     return PHPSPY_OK;
@@ -185,7 +193,7 @@ static int event_handler_fout_snprintf(char **s, size_t *n, size_t *ret_len, int
     return PHPSPY_OK;
 }
 
-static int event_handler_fout_open(int *fd) {
+int event_handler_fout_open(int *fd) {
     int tfd;
     if (strcmp(opt_path_output, "-") == 0) {
         tfd = dup(STDOUT_FILENO);

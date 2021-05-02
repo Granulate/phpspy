@@ -9,6 +9,9 @@ static void deinit_work_threads();
 static int block_all_signals();
 static void handle_signal(int signum);
 static void *run_signal_thread(void *arg);
+static int init_output_fds(void);
+static int install_sigusr2_handler(void);
+static void handle_sigusr2(int signal);
 
 static int *avail_pids = NULL;
 static int *attached_pids = NULL;
@@ -19,6 +22,10 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t can_produce = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t can_consume = PTHREAD_COND_INITIALIZER;
 static int done_pipe[2] = { -1, -1 };
+static int output_fd = -1;
+
+int pipe_fd_read = -1;
+int pipe_fd_write = -1;
 
 int main_pgrep() {
     long i;
@@ -27,6 +34,8 @@ int main_pgrep() {
         log_error("Expected max concurrent workers (-T) > 0\n");
         exit(1);
     }
+    init_output_fds();
+    install_sigusr2_handler();
 
     pthread_create(&signal_thread, NULL, run_signal_thread, NULL);
     block_all_signals();
@@ -52,6 +61,33 @@ int main_pgrep() {
 
     log_error("main_pgrep finished gracefully\n");
     return 0;
+}
+
+static int init_output_fds(void) {
+    int pipe_fds[2];
+    int tmp_output_fd;
+
+    int rv = pipe(pipe_fds);
+    if (rv != 0) {
+        perror("pgrep mode: open pipe failed");
+        return PHPSPY_ERR;
+    }
+    rv = fcntl(pipe_fds[0], F_SETFL, fcntl(pipe_fds[0], F_GETFL) | O_NONBLOCK);
+    if (rv != 0) {
+        perror("Failed settting O_NONBLOCK on pipe");
+        return PHPSPY_ERR;
+    }
+
+    rv = event_handler_fout_open(&tmp_output_fd);
+    if (rv != PHPSPY_OK) {
+        return PHPSPY_ERR;
+    }
+
+
+    pipe_fd_read = pipe_fds[0];
+    pipe_fd_write = pipe_fds[1];
+    output_fd = tmp_output_fd;
+    return PHPSPY_OK;
 }
 
 static int wait_for_turn(char producer_or_consumer) {
@@ -232,4 +268,34 @@ static void *run_signal_thread(void *arg) {
     pthread_mutex_unlock(&mutex);
 
     return NULL;
+}
+
+static int install_sigusr2_handler(void) {
+    struct sigaction sa;
+
+    memset(&sa, 0, sizeof(struct sigaction));
+    sa.sa_handler = handle_sigusr2;
+    sigaction(SIGUSR2, &sa, NULL);
+
+    return PHPSPY_OK;
+}
+
+
+static void handle_sigusr2(int signal) {
+    /* Lock is not needed since it's guaranteed by the Linux kernel that r/w ops on pipe on buffers <= PIPE_BUF size are synchronized */
+    char buf[PIPE_BUF];
+    int rv = 0;
+
+    (void)signal;
+    do {
+        if (!write(output_fd, buf, rv)) {
+            perror("Failed writing output in pgrep mode");
+        }
+        rv = read(pipe_fd_read, buf, sizeof(buf));
+        if (rv < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                perror("Failed reading from pgrep mode pipe");
+            }
+        }
+    } while (rv > 0);
 }
