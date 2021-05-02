@@ -22,7 +22,6 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t can_produce = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t can_consume = PTHREAD_COND_INITIALIZER;
 static int done_pipe[2] = { -1, -1 };
-static int output_fd = -1;
 
 int pipe_fd_read = -1;
 int pipe_fd_write = -1;
@@ -78,15 +77,16 @@ static int init_output_fds(void) {
         return PHPSPY_ERR;
     }
 
+    /* Validate a single time we can open */
     rv = event_handler_fout_open(&tmp_output_fd);
     if (rv != PHPSPY_OK) {
         return PHPSPY_ERR;
     }
+    close(tmp_output_fd);
 
 
     pipe_fd_read = pipe_fds[0];
     pipe_fd_write = pipe_fds[1];
-    output_fd = tmp_output_fd;
     return PHPSPY_OK;
 }
 
@@ -285,10 +285,12 @@ static void handle_sigusr2(int signal) {
     /* Lock is not needed since it's guaranteed by the Linux kernel that r/w ops on pipe on buffers <= PIPE_BUF size are synchronized */
     char buf[PIPE_BUF];
     int rv = 0;
+    int output_fd;
+    event_handler_fout_open(&output_fd);
 
     (void)signal;
     do {
-        if (!write(output_fd, buf, rv)) {
+        if (write(output_fd, buf, rv) < 0) {
             perror("Failed writing output in pgrep mode");
         }
         rv = read(pipe_fd_read, buf, sizeof(buf));
