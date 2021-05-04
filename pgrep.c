@@ -9,11 +9,13 @@ static void deinit_work_threads();
 static int block_all_signals();
 static void handle_signal(int signum);
 static void *run_signal_thread(void *arg);
-static int init_output_fds(void);
+static int init_output_fd(void);
+static int destroy_output_fd(void);
 static int install_sigusr2_handler(void);
 static void handle_sigusr2(int signal);
+static int fetch_current_timestamp(char *buf, size_t sz);
 
-static int *avail_pids = NULL;
+    static int *avail_pids = NULL;
 static int *attached_pids = NULL;
 static pthread_t *work_threads = NULL;
 static pthread_t signal_thread;
@@ -23,8 +25,8 @@ static pthread_cond_t can_produce = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t can_consume = PTHREAD_COND_INITIALIZER;
 static int done_pipe[2] = { -1, -1 };
 
-int pipe_fd_read = -1;
-int pipe_fd_write = -1;
+static int output_fd = -1;
+static pthread_rwlock_t pgrep_mode_rw_lock = PTHREAD_RWLOCK_INITIALIZER;
 
 int main_pgrep() {
     long i;
@@ -33,7 +35,7 @@ int main_pgrep() {
         log_error("Expected max concurrent workers (-T) > 0\n");
         exit(1);
     }
-    init_output_fds();
+    init_output_fd();
     install_sigusr2_handler();
 
     pthread_create(&signal_thread, NULL, run_signal_thread, NULL);
@@ -57,40 +59,53 @@ int main_pgrep() {
     pthread_join(signal_thread, NULL);
 
     deinit_work_threads();
+    destroy_output_fd();
 
     log_error("main_pgrep finished gracefully\n");
     return 0;
 }
 
-static int init_output_fds(void) {
-    int pipe_fds[2];
+static int init_output_fd(void) {
     int tmp_output_fd;
-
-    int rv = pipe(pipe_fds);
-    if (rv != 0) {
-        perror("pgrep mode: open pipe failed");
-        return PHPSPY_ERR;
-    }
-    rv = fcntl(pipe_fds[0], F_SETFL, fcntl(pipe_fds[0], F_GETFL) | O_NONBLOCK);
-    if (rv != 0) {
-        perror("Failed settting O_NONBLOCK on pipe");
-        return PHPSPY_ERR;
+    int rv;
+    if ((rv = (pthread_rwlock_init(&pgrep_mode_rw_lock, NULL))) != 0) {
+        log_error("pthread_rwlock_init failed: error - %d\n", rv);
     }
 
     /* Validate a single time we can open */
-    rv = event_handler_fout_open(&tmp_output_fd);
+    event_handler_fout_open(&tmp_output_fd);
     if (rv != PHPSPY_OK) {
         return PHPSPY_ERR;
     }
-    close(tmp_output_fd);
+    output_fd = tmp_output_fd;
 
-
-    pipe_fd_read = pipe_fds[0];
-    pipe_fd_write = pipe_fds[1];
     return PHPSPY_OK;
 }
 
-static int wait_for_turn(char producer_or_consumer) {
+
+static int destroy_output_fd(void) {
+    pthread_rwlock_destroy(&pgrep_mode_rw_lock);
+    close(output_fd);
+    return 0;
+}
+
+int pgrep_mode_output_write(const char *buf, size_t buf_size) {
+    int rv = PHPSPY_OK;
+    pthread_rwlock_rdlock(&pgrep_mode_rw_lock);
+
+    if (output_fd == -1) {
+        log_error("pgrep mode: FATAL: not writing output to file since output fd was not initialized\n");
+        rv = PHPSPY_ERR;
+    } else if (write(output_fd, buf, buf_size) != (int) buf_size) {
+        log_error("pgrep_mode: event_handler_fout: Write failed (%s)\n", errno != 0 ? strerror(errno) : "partial");
+        rv = PHPSPY_ERR;
+    }
+
+    pthread_rwlock_unlock(&pgrep_mode_rw_lock);
+    return rv;
+}
+
+static int wait_for_turn(char producer_or_consumer){
     struct timespec timeout;
     pthread_mutex_lock(&mutex);
     while (!done) {
@@ -280,24 +295,52 @@ static int install_sigusr2_handler(void) {
     return PHPSPY_OK;
 }
 
+/* Copied from linux: tools/perf/util/time-utils.c */
+static int fetch_current_timestamp(char *buf, size_t sz) {
+    struct timeval tv;
+    struct tm tm;
+    char dt[32];
+
+    if (gettimeofday(&tv, NULL) || !localtime_r(&tv.tv_sec, &tm))
+        return -1;
+
+    if (!strftime(dt, sizeof(dt), "%Y%m%d%H%M%S", &tm))
+        return -1;
+
+    snprintf(buf, sz, "%s%02u", dt, (unsigned)tv.tv_usec / 10000);
+
+    return 0;
+}
 
 static void handle_sigusr2(int signal) {
-    /* Lock is not needed since it's guaranteed by the Linux kernel that r/w ops on pipe on buffers <= PIPE_BUF size are synchronized */
-    char buf[PIPE_BUF];
-    int rv = 0;
-    int output_fd;
-    event_handler_fout_open(&output_fd);
+#define TIMESTAMP_BUF_SIZE (128)
+    char timestamp_buf[TIMESTAMP_BUF_SIZE];
+    char new_path[PATH_MAX];
+    int tmp_output_fd = -1;
 
     (void)signal;
-    do {
-        if (write(output_fd, buf, rv) < 0) {
-            perror("Failed writing output in pgrep mode");
-        }
-        rv = read(pipe_fd_read, buf, sizeof(buf));
-        if (rv < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                perror("Failed reading from pgrep mode pipe");
-            }
-        }
-    } while (rv > 0);
+    if (strcmp(opt_path_output, STDOUT_OUTPUT) == 0) {
+        log_error("Not rotating output file in stdout output mode\n");
+        return;
+    }
+
+    /* When changing the filename we must obtain the R/W in write mode because we wan't that no spiers will write to the output file */
+    pthread_rwlock_wrlock(&pgrep_mode_rw_lock);
+    close(output_fd);
+    output_fd = -1;
+
+    if (fetch_current_timestamp(timestamp_buf, TIMESTAMP_BUF_SIZE) != 0) {
+        strncpy(timestamp_buf, "UNKNOWN-TS", TIMESTAMP_BUF_SIZE);
+    }
+
+    snprintf(new_path, PATH_MAX, "%s.%s", opt_path_output, timestamp_buf);
+    rename(opt_path_output, new_path);
+
+    if (event_handler_fout_open(&tmp_output_fd) != PHPSPY_OK) {
+        log_error("FATAL! couldn't reopen log output file after rotation");
+    } else {
+        output_fd = tmp_output_fd;
+    }
+
+    pthread_rwlock_unlock(&pgrep_mode_rw_lock);
 }

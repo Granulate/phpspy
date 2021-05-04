@@ -245,7 +245,7 @@ static int callgrind_open(FILE **fout) {
     /* TODO consolidate -o -O -E flags as `-o fn` == "fn[.pid].(out|err) */
     int tfd;
     tfd = -1;
-    if (strcmp(opt_path_output, "-") == 0) {
+    if (strcmp(opt_path_output, STDOUT_OUTPUT) == 0) {
         tfd = dup(STDOUT_FILENO);
         *fout = fdopen(tfd, "w");
     } else {

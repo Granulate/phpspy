@@ -85,6 +85,8 @@
 #define IS_REFERENCE 10
 #endif
 
+#define STDOUT_OUTPUT "-"
+
 typedef struct varpeek_var_s {
     char name[PHPSPY_STR_SIZE];
     UT_hash_handle hh;
@@ -195,10 +197,8 @@ extern int opt_continue_on_error;
 extern int opt_fout_buffer_size;
 extern long opt_time_limit_ms;
 extern int in_pgrep_mode;
-extern int opt_signaled_output;
 
-extern int pipe_fd_read;
-extern int pipe_fd_write;
+extern int out_fd;
 
 extern int main_pgrep();
 extern int main_pid(pid_t pid);
@@ -212,5 +212,8 @@ extern int event_handler_callgrind(struct trace_context_s *context, int event_ty
 extern void write_done_pipe();
 extern void log_error(const char *fmt, ...);
 extern uint64_t phpspy_zend_inline_hash_func(const char *str, size_t len);
+
+
+extern int pgrep_mode_output_write(const char *buf, size_t buf_size);
 
 #endif

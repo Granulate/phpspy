@@ -18,7 +18,7 @@ char opt_frame_delim = '\n';
 char opt_trace_delim = '\n';
 uint64_t opt_trace_limit = 0;
 long opt_time_limit_ms = 0;
-char *opt_path_output = "-";
+char *opt_path_output = STDOUT_OUTPUT;
 char *opt_path_child_out = "phpspy.%d.out";
 char *opt_path_child_err = "phpspy.%d.err";
 char *opt_phpv = "auto";
@@ -31,7 +31,6 @@ int opt_verbose_fields_phpv = 0;
 int (*opt_event_handler)(struct trace_context_s *context, int event_type) = event_handler_fout;
 int opt_continue_on_error = 0;
 int opt_fout_buffer_size = 4096;
-int opt_signaled_output = 0;
 
 int done = 0;
 varpeek_entry_t *varpeek_map = NULL;
@@ -242,7 +241,6 @@ static void parse_opts(int argc, char **argv) {
         { "peek-var",              required_argument, NULL, 'e' },
         { "peek-global",           required_argument, NULL, 'g' },
         { "top",                   no_argument,       NULL, 't' },
-        { "signaled-output",       no_argument,       NULL, 'Y' },
         { 0,                       0,                 0,    0   }
     };
     /* Parse options until the first non-option argument is reached. Effectively
@@ -255,7 +253,7 @@ static void parse_opts(int argc, char **argv) {
     while (
         optind < argc
         && argv[optind][0] == '-'
-        && (c = getopt_long(argc, argv, "hp:P:T:te:s:H:V:l:i:n:r:mo:O:E:x:a:1b:f:F:d:cj:#:@vSe:g:t:Y", long_opts, NULL)) != -1
+        && (c = getopt_long(argc, argv, "hp:P:T:te:s:H:V:l:i:n:r:mo:O:E:x:a:1b:f:F:d:cj:#:@vSe:g:t", long_opts, NULL)) != -1
     ) {
         switch (c) {
             case 'h': usage(stdout, 0); break;
@@ -344,7 +342,6 @@ static void parse_opts(int argc, char **argv) {
             case 'e': varpeek_add(optarg); break;
             case 'g': glopeek_add(optarg); break;
             case 't': opt_top_mode = 1; break;
-            case 'Y': opt_signaled_output = 1; break;
         }
     }
 }
@@ -522,7 +519,7 @@ static int unpause_pid(pid_t pid) {
 static void redirect_child_stdio(int proc_fd, char *opt_path) {
     char *redir_path;
     FILE *redir_file;
-    if (strcmp(opt_path, "-") == 0) {
+    if (strcmp(opt_path, STDOUT_OUTPUT) == 0) {
         return;
     } else if (strstr(opt_path, "%d") != NULL) {
         if (asprintf(&redir_path, opt_path, getpid()) < 0) {

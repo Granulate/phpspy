@@ -151,14 +151,11 @@ static int event_handler_fout_write(event_handler_fout_udata_t *udata) {
     if (write_len < 1) {
         /* nothing to write */
     } else {
-        int out_fd;
-        if (in_pgrep_mode && opt_signaled_output) {
-            out_fd = pipe_fd_write;
+        if (in_pgrep_mode) {
+            return pgrep_mode_output_write(udata->buf, write_len);
         }
-        else {
-            out_fd = udata->fd;
-        }
-        if (write(out_fd, udata->buf, write_len) != write_len) {
+
+        if (write(udata->fd, udata->buf, write_len) != write_len) {
             log_error("event_handler_fout: Write failed (%s)\n", errno != 0 ? strerror(errno) : "partial");
             return PHPSPY_ERR;
         }
@@ -199,7 +196,7 @@ static int event_handler_fout_snprintf(char **s, size_t *n, size_t *ret_len, int
 
 int event_handler_fout_open(int *fd) {
     int tfd;
-    if (strcmp(opt_path_output, "-") == 0) {
+    if (strcmp(opt_path_output, STDOUT_OUTPUT) == 0) {
         tfd = dup(STDOUT_FILENO);
         if (tfd < 0) {
             perror("event_handler_fout_open: dup");
