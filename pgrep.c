@@ -26,6 +26,14 @@ static pthread_cond_t can_consume = PTHREAD_COND_INITIALIZER;
 static int done_pipe[2] = { -1, -1 };
 
 static int output_fd = -1;
+
+/*
+    When outputing in pgrep mode we are using R/W lock, when writing to the output file we use the lock as a reader lock,
+    because we can write from multiple threads without any issue.
+    In order to support the file rotation we MUST lock all of threads writing to the output file so we can close the fd, rename the file and re-open,
+    In summary: writing to the file can be done with unlimited number of threads (we use the R/W lock as reader in this case),
+    and when rotating we must ensure we are the only one touching the fd so we use the lock as a single "writer".
+*/
 static pthread_rwlock_t pgrep_mode_rw_lock = PTHREAD_RWLOCK_INITIALIZER;
 
 int main_pgrep() {
@@ -91,6 +99,7 @@ static int destroy_output_fd(void) {
 
 int pgrep_mode_output_write(const char *buf, size_t buf_size) {
     int rv = PHPSPY_OK;
+    /* See lock explanation comment above the lock declaration  */
     pthread_rwlock_rdlock(&pgrep_mode_rw_lock);
 
     if (output_fd == -1) {
@@ -324,7 +333,7 @@ static void handle_sigusr2(int signal) {
         return;
     }
 
-    /* When changing the filename we must obtain the R/W in write mode because we wan't that no spiers will write to the output file */
+    /* See lock explanation comment above the lock declaration  */
     pthread_rwlock_wrlock(&pgrep_mode_rw_lock);
     close(output_fd);
     output_fd = -1;
