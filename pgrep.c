@@ -14,15 +14,18 @@ static int destroy_output_fd(void);
 static int install_sigusr2_handler(void);
 static void handle_sigusr2(int signal);
 static int fetch_current_timestamp(char *buf, size_t sz);
+static void *rotate_output_thread_func(void *arg);
 
-    static int *avail_pids = NULL;
+static int *avail_pids = NULL;
 static int *attached_pids = NULL;
 static pthread_t *work_threads = NULL;
 static pthread_t signal_thread;
+static pthread_t rotate_output_thread;
 static int avail_pids_count = 0;
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t can_produce = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t can_consume = PTHREAD_COND_INITIALIZER;
+static int should_rotate = 0;
 static int done_pipe[2] = { -1, -1 };
 
 static int output_fd = -1;
@@ -44,6 +47,7 @@ int main_pgrep() {
         exit(1);
     }
     init_output_fd();
+    pthread_create(&rotate_output_thread, NULL, rotate_output_thread_func, NULL);
     install_sigusr2_handler();
 
     pthread_create(&signal_thread, NULL, run_signal_thread, NULL);
@@ -65,6 +69,7 @@ int main_pgrep() {
         pthread_join(work_threads[i], NULL);
     }
     pthread_join(signal_thread, NULL);
+    pthread_join(rotate_output_thread, NULL);
 
     deinit_work_threads();
     destroy_output_fd();
@@ -322,34 +327,52 @@ static int fetch_current_timestamp(char *buf, size_t sz) {
 }
 
 static void handle_sigusr2(int signal) {
+    (void)signal;
+    should_rotate = 1;
+}
+
+static void *rotate_output_thread_func(void *arg) {
 #define TIMESTAMP_BUF_SIZE (128)
     char timestamp_buf[TIMESTAMP_BUF_SIZE];
     char new_path[PATH_MAX];
     int tmp_output_fd = -1;
+    struct timespec sleep_request = {0};
 
-    (void)signal;
+    (void)arg;
+#define SLEEP_TIME_MS (50)
+    sleep_request.tv_nsec = SLEEP_TIME_MS * 1000000;
+
     if (strcmp(opt_path_output, STDOUT_OUTPUT) == 0) {
-        log_error("Not rotating output file in stdout output mode\n");
-        return;
+        return NULL;
     }
 
-    /* See lock explanation comment above the lock declaration  */
-    pthread_rwlock_wrlock(&pgrep_mode_rw_lock);
-    close(output_fd);
-    output_fd = -1;
+    while (!done) {
+        (void)nanosleep(&sleep_request, NULL);
 
-    if (fetch_current_timestamp(timestamp_buf, TIMESTAMP_BUF_SIZE) != 0) {
-        strncpy(timestamp_buf, "UNKNOWN-TS", TIMESTAMP_BUF_SIZE);
+        if (!should_rotate) {
+            continue;
+        }
+
+        /* See lock explanation comment above the lock declaration  */
+        pthread_rwlock_wrlock(&pgrep_mode_rw_lock);
+        close(output_fd);
+        output_fd = -1;
+
+        if (fetch_current_timestamp(timestamp_buf, TIMESTAMP_BUF_SIZE) != 0) {
+            strncpy(timestamp_buf, "UNKNOWN-TS", TIMESTAMP_BUF_SIZE);
+        }
+
+        snprintf(new_path, PATH_MAX, "%s.%s", opt_path_output, timestamp_buf);
+        rename(opt_path_output, new_path);
+
+        if (event_handler_fout_open(&tmp_output_fd) != PHPSPY_OK) {
+            log_error("FATAL! couldn't reopen log output file after rotation");
+        } else {
+            output_fd = tmp_output_fd;
+        }
+
+        pthread_rwlock_unlock(&pgrep_mode_rw_lock);
+        should_rotate = 0;
     }
-
-    snprintf(new_path, PATH_MAX, "%s.%s", opt_path_output, timestamp_buf);
-    rename(opt_path_output, new_path);
-
-    if (event_handler_fout_open(&tmp_output_fd) != PHPSPY_OK) {
-        log_error("FATAL! couldn't reopen log output file after rotation");
-    } else {
-        output_fd = tmp_output_fd;
-    }
-
-    pthread_rwlock_unlock(&pgrep_mode_rw_lock);
+    return NULL;
 }
