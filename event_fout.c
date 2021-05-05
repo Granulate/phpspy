@@ -203,7 +203,7 @@ int event_handler_fout_open(int *fd) {
             return PHPSPY_ERR;
         }
     } else {
-        tfd = open(opt_path_output, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+        tfd = open(opt_path_output, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
         if (tfd < 0) {
             perror("event_handler_fout_open: open");
             return PHPSPY_ERR;
