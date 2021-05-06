@@ -85,6 +85,8 @@
 #define IS_REFERENCE 10
 #endif
 
+#define TASK_COMM_LEN (16) /* copied from linux/sched.h */
+
 typedef struct varpeek_var_s {
     char name[PHPSPY_STR_SIZE];
     UT_hash_handle hh;
@@ -145,6 +147,7 @@ typedef struct trace_glopeek_s {
 typedef struct trace_target_s {
     pid_t pid;
     char phpv[4];
+    char comm[TASK_COMM_LEN + 1]; /* TASK_COMM_LEN is allowed to be non null terminated if reaches max size, here add null-termination */
     uint64_t executor_globals_addr;
     uint64_t sapi_globals_addr;
     uint64_t alloc_globals_addr;
@@ -191,6 +194,7 @@ extern int opt_filter_negate;
 extern int opt_verbose_fields_pid;
 extern int opt_verbose_fields_ts;
 extern int opt_verbose_fields_phpv;
+extern int opt_verbose_fields_comm;
 extern int opt_continue_on_error;
 extern int opt_fout_buffer_size;
 extern long opt_time_limit_ms;
