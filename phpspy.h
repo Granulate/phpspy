@@ -197,7 +197,7 @@ extern int opt_continue_on_error;
 extern int opt_fout_buffer_size;
 extern long opt_time_limit_ms;
 extern int in_pgrep_mode;
-
+extern int output_fd;
 
 extern int main_pgrep();
 extern int main_pid(pid_t pid);
@@ -214,6 +214,6 @@ extern void write_done_pipe();
 extern void log_error(const char *fmt, ...);
 extern uint64_t phpspy_zend_inline_hash_func(const char *str, size_t len);
 
-extern int pgrep_mode_output_write(int fd, const char *buf, size_t buf_size);
+extern int pgrep_mode_output_write(const char *buf, size_t buf_size);
 
 #endif

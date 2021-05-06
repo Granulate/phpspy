@@ -1,6 +1,6 @@
 #include "phpspy.h"
 
-static int output_fd = -1;
+int output_fd = -1;
 typedef struct event_handler_fout_udata_s {
     char *buf;
     char *cur;
@@ -28,12 +28,19 @@ int event_handler_fout(struct trace_context_s *context, int event_type) {
         case PHPSPY_TRACE_EVENT_INIT:
             udata = calloc(1, sizeof(event_handler_fout_udata_t));
             udata->buf_size = opt_fout_buffer_size + 1; /* + 1 for null char */
-            udata->buf = malloc(udata->buf_size);
-            udata->cur = udata->buf;
-            udata->rem = udata->buf_size;
+
+            /* When not in pgrep mode can share the same buffer because there is only a single thread */
+            if (!in_pgrep_mode) {
+                udata->buf = malloc(udata->buf_size);
+            }
+
             context->event_udata = udata;
             break;
         case PHPSPY_TRACE_EVENT_STACK_BEGIN:
+            if (in_pgrep_mode) {
+                udata->buf = malloc(udata->buf_size);
+            }
+
             udata->cur = udata->buf;
             udata->cur[0] = '\0';
             udata->rem = udata->buf_size;
@@ -134,7 +141,9 @@ int event_handler_fout(struct trace_context_s *context, int event_type) {
             try(rv, event_handler_fout_write(udata));
             break;
         case PHPSPY_TRACE_EVENT_DEINIT:
-            free(udata->buf);
+            if (!in_pgrep_mode) {
+                free(udata->buf); /* Freed in pgrep.c: drain_pipe_to_file */
+            }
             free(udata);
             break;
     }
@@ -149,7 +158,7 @@ static int event_handler_fout_write(event_handler_fout_udata_t *udata) {
         /* nothing to write */
     } else {
         if (in_pgrep_mode) {
-            return pgrep_mode_output_write(output_fd, udata->buf, write_len);
+            return pgrep_mode_output_write(udata->buf, write_len);
         }
 
         if (write(output_fd, udata->buf, write_len) != write_len) {

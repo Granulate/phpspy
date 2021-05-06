@@ -1,4 +1,10 @@
 #include "phpspy.h"
+#include <poll.h>
+
+typedef struct __attribute__((packed)) write_msg_s {
+    const char *buf;
+    size_t buf_size;
+} write_msg_t;
 
 static int wait_for_turn(char producer_or_consumer);
 static void pgrep_for_pids();
@@ -9,11 +15,12 @@ static void deinit_work_threads();
 static int block_all_signals();
 static void handle_signal(int signum);
 static void *run_signal_thread(void *arg);
-static int init_pgrep_output_lock(void);
+static int init_pgrep_output_pipe(void);
 static int install_sigusr2_handler(void);
 static void handle_sigusr2(int signal);
 static int fetch_current_timestamp(char *buf, size_t sz);
-static void *rotate_output_thread_func(void *arg);
+static void *run_write_output_thread(void *arg);
+static int drain_pipe_to_file(void);
 
 static int *avail_pids = NULL;
 static int *attached_pids = NULL;
@@ -28,13 +35,17 @@ static int should_rotate = 0;
 static int done_pipe[2] = { -1, -1 };
 
 /*
-    When outputing in pgrep mode we are using R/W lock, when writing to the output file we use the lock as a reader lock,
-    because we can write from multiple threads without any issue.
-    In order to support the file rotation we MUST lock all of threads writing to the output file so we can close the fd, rename the file and re-open,
-    In summary: writing to the file can be done with unlimited number of threads (we use the R/W lock as reader in this case),
-    and when rotating we must ensure we are the only one touching the fd so we use the lock as a single "writer".
+    A little brief on how the output works in pgrep mode:
+    In order to prevent interlaced outputs in large buffers (bigger than PIPE_BUF), we do the following:
+
+    A buffer (udata->buf) is allocated on each stack begin, frames of the same stack are being written to this buffer,
+    When the stack finishes, the buffer and the size of the written data are written to a pipe (unlike the normal PID mode where the buffer
+    is written directly to stdout), because the data and the size (write_msg_t) is a lot smaller than PIPE_BUF operations are synchronized.
+    On a polling thread, we poll on the the read side of the pipe where we receive messages (write_msg_t), we read these messages
+    and "drain" them to the output file, after writing the data we free the buffer that was previously allocated.
+    The reason we are fully secured is that only a single thread writes to the outputfile in pgrep mode.
 */
-static pthread_rwlock_t pgrep_mode_rw_lock = PTHREAD_RWLOCK_INITIALIZER;
+static int output_pipe[2] = { -1, -1 };
 
 int main_pgrep() {
     long i;
@@ -48,8 +59,8 @@ int main_pgrep() {
         exit(1);
     }
 
-    init_pgrep_output_lock();
-    pthread_create(&rotate_output_thread, NULL, rotate_output_thread_func, NULL);
+    init_pgrep_output_pipe();
+    pthread_create(&rotate_output_thread, NULL, run_write_output_thread, NULL);
     install_sigusr2_handler();
 
     pthread_create(&signal_thread, NULL, run_signal_thread, NULL);
@@ -74,35 +85,38 @@ int main_pgrep() {
     pthread_join(rotate_output_thread, NULL);
 
     deinit_work_threads();
+
+    close(output_pipe[1]); /* First, close write fd to the pipe so no more stacks will be written */
+    drain_pipe_to_file(); /* Drain remaining stacks and free the buffers */
+    close(output_pipe[0]);
     deinit_output_fd();
 
     log_error("main_pgrep finished gracefully\n");
     return 0;
 }
 
-static int init_pgrep_output_lock(void) {
+static int init_pgrep_output_pipe(void) {
     int rv;
-    if ((rv = (pthread_rwlock_init(&pgrep_mode_rw_lock, NULL))) != 0) {
-        log_error("pthread_rwlock_init failed: error - %d\n", rv);
+    rv = pipe(output_pipe);
+    if (rv != 0) {
+        log_error("Couldn't open output pipe - errno %d\n");
+        return PHPSPY_ERR;
     }
-    return rv;
+    /* Set read fd as non-blocking */
+    fcntl(output_pipe[0], F_SETFL, fcntl(output_pipe[0], F_GETFL, 0) | O_NONBLOCK);
+    return PHPSPY_OK;
 }
 
 
-int pgrep_mode_output_write(int fd, const char *buf, size_t buf_size) {
+int pgrep_mode_output_write(const char *buf, size_t buf_size) {
     int rv = PHPSPY_OK;
-    /* See lock explanation comment above the lock declaration  */
-    pthread_rwlock_rdlock(&pgrep_mode_rw_lock);
 
-    if (fd <= 0) {
-        log_error("pgrep mode: FATAL: not writing output to file since output fd was not initialized\n");
-        rv = PHPSPY_ERR;
-    } else if (write(fd, buf, buf_size) != (int) buf_size) {
-        log_error("pgrep_mode: event_handler_fout: Write failed (%s)\n", errno != 0 ? strerror(errno) : "partial");
-        rv = PHPSPY_ERR;
+    write_msg_t msg;
+    msg.buf = buf;
+    msg.buf_size = buf_size;
+    if ((rv = write(output_pipe[1], &msg, sizeof(msg)) != sizeof(msg))) {
+        log_error("FATAL! couldn't write message in a single chunk to the pipe\n");
     }
-
-    pthread_rwlock_unlock(&pgrep_mode_rw_lock);
     return rv;
 }
 
@@ -318,44 +332,86 @@ static void handle_sigusr2(int signal) {
     should_rotate = 1;
 }
 
-static void *rotate_output_thread_func(void *arg) {
+static void rotate_output(void) {
 #define TIMESTAMP_BUF_SIZE (128)
     char timestamp_buf[TIMESTAMP_BUF_SIZE];
     char new_path[PATH_MAX];
-    struct timespec sleep_request = {0};
-
-    (void)arg;
-#define SLEEP_TIME_MS (50)
-    sleep_request.tv_nsec = SLEEP_TIME_MS * 1000000;
 
     if (strcmp(opt_path_output, STDOUT_OUTPUT) == 0) {
-        return NULL;
+        return;
     }
+
+    deinit_output_fd();
+
+    if (fetch_current_timestamp(timestamp_buf, TIMESTAMP_BUF_SIZE) != 0) {
+        strncpy(timestamp_buf, "UNKNOWN-TS", TIMESTAMP_BUF_SIZE);
+    }
+    snprintf(new_path, PATH_MAX, "%s.%s", opt_path_output, timestamp_buf);
+    rename(opt_path_output, new_path);
+
+    if (init_output_fd() != PHPSPY_OK) {
+        log_error("FATAL! couldn't reopen log output file after rotation\n");
+        /* flag to exit ASAP */
+        done = 1;
+    }
+}
+
+static int drain_pipe_to_file(void) {
+    int rv = 0;
+
+    write_msg_t msg;
+    while ((rv = read(output_pipe[0], &msg, sizeof(msg))) != -1 && !should_rotate) {
+        if (rv == 0) { /* EOF */
+            return PHPSPY_OK;
+        }
+
+        if (rv != sizeof(msg)) {
+            log_error("FATAL! read %d bytes from the pipe which is not a full write_msg_t (sizeof = %d)\n", rv, sizeof(msg));
+            done = 1; /* can't recover from this stage, but really should never happen */
+            return PHPSPY_ERR;
+        }
+
+        if (write(output_fd, msg.buf, msg.buf_size) != (int) msg.buf_size) {
+            log_error("event_handler_fout: Write failed (%s)\n", errno != 0 ? strerror(errno) : "partial");
+        }
+        free((void *) msg.buf); /* Allocated at event_handler_fout at EVENT_STACK_BEGIN */
+    }
+
+    if (rv != 0 && errno != EAGAIN) {
+        perror("Error while draining pipe messages to output file");
+        return PHPSPY_ERR;
+    }
+
+    return PHPSPY_OK;
+}
+
+static void *run_write_output_thread(void *arg) {
+    int rv;
+    struct pollfd poll_pipe = {0};
+    (void)arg;
+
+    poll_pipe.fd = output_pipe[0];
+    poll_pipe.events = POLLIN;
 
     while (!done) {
-        (void)nanosleep(&sleep_request, NULL);
+        if (should_rotate) {
+            rotate_output();
+            should_rotate = 0;
+        }
 
-        if (!should_rotate) {
+        /* See explanation above output_pipe declaration */
+#define POLL_TIMEOUT_MS (50)
+        rv = poll(&poll_pipe, 1, POLL_TIMEOUT_MS);
+        if (rv == 0) { /* timeout - continue */
+            continue;
+        } else if (rv < 0) {
+            if (errno != EINTR) {
+                perror("poll on pipe fd failed");
+            }
             continue;
         }
-
-        /* See lock explanation comment above the lock declaration  */
-        pthread_rwlock_wrlock(&pgrep_mode_rw_lock);
-        deinit_output_fd();
-
-        if (fetch_current_timestamp(timestamp_buf, TIMESTAMP_BUF_SIZE) != 0) {
-            strncpy(timestamp_buf, "UNKNOWN-TS", TIMESTAMP_BUF_SIZE);
-        }
-
-        snprintf(new_path, PATH_MAX, "%s.%s", opt_path_output, timestamp_buf);
-        rename(opt_path_output, new_path);
-
-        if (init_output_fd() != PHPSPY_OK) {
-            log_error("FATAL! couldn't reopen log output file after rotation");
-        }
-
-        pthread_rwlock_unlock(&pgrep_mode_rw_lock);
-        should_rotate = 0;
+        drain_pipe_to_file();
     }
+
     return NULL;
 }
