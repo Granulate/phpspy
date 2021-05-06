@@ -100,10 +100,6 @@ All with no changes to your application and minimal overhead.
                                            (default: 0; 0=find dynamically)
       -1, --single-line                  Output in single-line mode
       -b, --buffer-size=<size>           Set output buffer size to `size`.
-                                           Note: In `-P` mode, setting this
-                                           above PIPE_BUF (4096) may lead to
-                                           interlaced writes across threads.
-                                           (default: 4096)
       -f, --filter=<regex>               Filter output by POSIX regex
                                            (default: none)
       -F, --filter-negate=<regex>        Same as `-f` except negated
