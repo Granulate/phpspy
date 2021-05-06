@@ -4,7 +4,7 @@ phpspy_ldflags:=$(LDFLAGS)
 phpspy_includes:=-I. -I./vendor
 phpspy_defines:=
 phpspy_tests:=$(wildcard tests/test_*.sh)
-phpspy_sources:=phpspy.c pgrep.c top.c addr_objdump.c event_fout.c event_callgrind.c
+phpspy_sources:=phpspy.c pgrep.c top.c addr_objdump.c event_fout.c
 
 termbox_inlcudes=-Ivendor/termbox/
 termbox_libs:=-Lvendor/termbox/ -ltermbox

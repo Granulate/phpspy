@@ -155,8 +155,6 @@ void usage(FILE *fp, int exit_code) {
     fprintf(fp, "  -v, --version                      Print phpspy version and exit\n");
     fprintf(fp, "\n");
     fprintf(fp, "Experimental options:\n");
-    fprintf(fp, "  -j, --event-handler=<handler>      Set event handler (fout, callgrind)\n");
-    fprintf(fp, "                                       (default: fout)\n");
     fprintf(fp, "  -S, --pause-process                Pause process while reading stacktrace\n");
     fprintf(fp, "                                       (unsafe for production!)\n");
     fprintf(fp, "  -e, --peek-var=<varspec>           Peek at the contents of the var located\n");
@@ -233,7 +231,6 @@ static void parse_opts(int argc, char **argv) {
         { "filter-negate",         required_argument, NULL, 'F' },
         { "verbose-fields",        required_argument, NULL, 'd' },
         { "continue-on-error",     no_argument,       NULL, 'c' },
-        { "event-handler",         required_argument, NULL, 'j' },
         { "comment",               required_argument, NULL, '#' },
         { "nothing",               no_argument,       NULL, '@' },
         { "version",               no_argument,       NULL, 'v' },
@@ -253,7 +250,7 @@ static void parse_opts(int argc, char **argv) {
     while (
         optind < argc
         && argv[optind][0] == '-'
-        && (c = getopt_long(argc, argv, "hp:P:T:te:s:H:V:l:i:n:r:mo:O:E:x:a:1b:f:F:d:cj:#:@vSe:g:t", long_opts, NULL)) != -1
+        && (c = getopt_long(argc, argv, "hp:P:T:te:s:H:V:l:i:n:r:mo:O:E:x:a:1b:f:F:d:c:#:@vSe:g:t", long_opts, NULL)) != -1
     ) {
         switch (c) {
             case 'h': usage(stdout, 0); break;
@@ -315,17 +312,6 @@ static void parse_opts(int argc, char **argv) {
                 }
                 break;
             case 'c': opt_continue_on_error = 1; break;
-            case 'j':
-                if (strcmp(optarg, "fout") == 0) {
-                    opt_event_handler = event_handler_fout;
-                } else if (strcmp(optarg, "callgrind") == 0) {
-                    opt_event_handler = event_handler_callgrind;
-                } else {
-                    log_error("parse_opts: Expected 'fout' or 'callgrind' for `--event-handler`\n\n");
-                    usage(stderr, 1);
-                }
-                break;
-            case '#': break;
             case '@': break;
             case 'v':
                 printf(
@@ -393,6 +379,12 @@ int main_pid(pid_t pid) {
         clock_add(stop_time, &limit_time, stop_time);
     }
 
+    if (!in_pgrep_mode) { /* in pgrep mode the initialization happends there so we share the same fd and prevent races */
+        if (init_output_fd() != PHPSPY_OK) {
+            goto done;
+        }
+    }
+
     while (!done) {
         /* record start_time */
         clock_get(&start_time);
@@ -430,12 +422,17 @@ int main_pid(pid_t pid) {
         nanosleep(&sleep_time, NULL);
     }
 
+done:
     context.event_handler(&context, PHPSPY_TRACE_EVENT_DEINIT);
 
     /* in pgrep mode, trigger done condition if we went over the trace limit.
        it is ok for multiple threads to call this. */
     if (in_pgrep_mode && opt_trace_limit > 0 && trace_count >= opt_trace_limit) {
         write_done_pipe();
+    }
+
+    if (!in_pgrep_mode) {
+        deinit_output_fd();
     }
 
     /* TODO proper signal handling for non-pgrep modes */

@@ -198,7 +198,6 @@ extern int opt_fout_buffer_size;
 extern long opt_time_limit_ms;
 extern int in_pgrep_mode;
 
-extern int out_fd;
 
 extern int main_pgrep();
 extern int main_pid(pid_t pid);
@@ -208,12 +207,13 @@ extern void usage(FILE *fp, int exit_code);
 extern int get_symbol_addr(addr_memo_t *memo, pid_t pid, const char *symbol, uint64_t *raddr);
 extern int event_handler_fout(struct trace_context_s *context, int event_type);
 extern int event_handler_fout_open(int *fd);
-extern int event_handler_callgrind(struct trace_context_s *context, int event_type);
+extern int init_output_fd(void);
+extern void deinit_output_fd(void);
+
 extern void write_done_pipe();
 extern void log_error(const char *fmt, ...);
 extern uint64_t phpspy_zend_inline_hash_func(const char *str, size_t len);
 
-
-extern int pgrep_mode_output_write(const char *buf, size_t buf_size);
+extern int pgrep_mode_output_write(int fd, const char *buf, size_t buf_size);
 
 #endif

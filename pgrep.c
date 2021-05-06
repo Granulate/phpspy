@@ -9,8 +9,7 @@ static void deinit_work_threads();
 static int block_all_signals();
 static void handle_signal(int signum);
 static void *run_signal_thread(void *arg);
-static int init_output_fd(void);
-static int destroy_output_fd(void);
+static int init_pgrep_output_lock(void);
 static int install_sigusr2_handler(void);
 static void handle_sigusr2(int signal);
 static int fetch_current_timestamp(char *buf, size_t sz);
@@ -28,8 +27,6 @@ static pthread_cond_t can_consume = PTHREAD_COND_INITIALIZER;
 static int should_rotate = 0;
 static int done_pipe[2] = { -1, -1 };
 
-static int output_fd = -1;
-
 /*
     When outputing in pgrep mode we are using R/W lock, when writing to the output file we use the lock as a reader lock,
     because we can write from multiple threads without any issue.
@@ -46,7 +43,12 @@ int main_pgrep() {
         log_error("Expected max concurrent workers (-T) > 0\n");
         exit(1);
     }
-    init_output_fd();
+
+    if (init_output_fd() != PHPSPY_OK) {
+        exit(1);
+    }
+
+    init_pgrep_output_lock();
     pthread_create(&rotate_output_thread, NULL, rotate_output_thread_func, NULL);
     install_sigusr2_handler();
 
@@ -72,45 +74,30 @@ int main_pgrep() {
     pthread_join(rotate_output_thread, NULL);
 
     deinit_work_threads();
-    destroy_output_fd();
+    deinit_output_fd();
 
     log_error("main_pgrep finished gracefully\n");
     return 0;
 }
 
-static int init_output_fd(void) {
-    int tmp_output_fd;
+static int init_pgrep_output_lock(void) {
     int rv;
     if ((rv = (pthread_rwlock_init(&pgrep_mode_rw_lock, NULL))) != 0) {
         log_error("pthread_rwlock_init failed: error - %d\n", rv);
     }
-
-    /* Validate a single time we can open */
-    event_handler_fout_open(&tmp_output_fd);
-    if (rv != PHPSPY_OK) {
-        return PHPSPY_ERR;
-    }
-    output_fd = tmp_output_fd;
-
-    return PHPSPY_OK;
+    return rv;
 }
 
 
-static int destroy_output_fd(void) {
-    pthread_rwlock_destroy(&pgrep_mode_rw_lock);
-    close(output_fd);
-    return 0;
-}
-
-int pgrep_mode_output_write(const char *buf, size_t buf_size) {
+int pgrep_mode_output_write(int fd, const char *buf, size_t buf_size) {
     int rv = PHPSPY_OK;
     /* See lock explanation comment above the lock declaration  */
     pthread_rwlock_rdlock(&pgrep_mode_rw_lock);
 
-    if (output_fd == -1) {
+    if (fd <= 0) {
         log_error("pgrep mode: FATAL: not writing output to file since output fd was not initialized\n");
         rv = PHPSPY_ERR;
-    } else if (write(output_fd, buf, buf_size) != (int) buf_size) {
+    } else if (write(fd, buf, buf_size) != (int) buf_size) {
         log_error("pgrep_mode: event_handler_fout: Write failed (%s)\n", errno != 0 ? strerror(errno) : "partial");
         rv = PHPSPY_ERR;
     }
@@ -335,7 +322,6 @@ static void *rotate_output_thread_func(void *arg) {
 #define TIMESTAMP_BUF_SIZE (128)
     char timestamp_buf[TIMESTAMP_BUF_SIZE];
     char new_path[PATH_MAX];
-    int tmp_output_fd = -1;
     struct timespec sleep_request = {0};
 
     (void)arg;
@@ -355,8 +341,7 @@ static void *rotate_output_thread_func(void *arg) {
 
         /* See lock explanation comment above the lock declaration  */
         pthread_rwlock_wrlock(&pgrep_mode_rw_lock);
-        close(output_fd);
-        output_fd = -1;
+        deinit_output_fd();
 
         if (fetch_current_timestamp(timestamp_buf, TIMESTAMP_BUF_SIZE) != 0) {
             strncpy(timestamp_buf, "UNKNOWN-TS", TIMESTAMP_BUF_SIZE);
@@ -365,10 +350,8 @@ static void *rotate_output_thread_func(void *arg) {
         snprintf(new_path, PATH_MAX, "%s.%s", opt_path_output, timestamp_buf);
         rename(opt_path_output, new_path);
 
-        if (event_handler_fout_open(&tmp_output_fd) != PHPSPY_OK) {
+        if (init_output_fd() != PHPSPY_OK) {
             log_error("FATAL! couldn't reopen log output file after rotation");
-        } else {
-            output_fd = tmp_output_fd;
         }
 
         pthread_rwlock_unlock(&pgrep_mode_rw_lock);

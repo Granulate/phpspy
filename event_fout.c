@@ -1,7 +1,7 @@
 #include "phpspy.h"
 
+static int output_fd = -1;
 typedef struct event_handler_fout_udata_s {
-    int fd;
     char *buf;
     char *cur;
     size_t buf_size;
@@ -12,7 +12,7 @@ static int event_handler_fout_write(event_handler_fout_udata_t *udata);
 static int event_handler_fout_snprintf(char **s, size_t *n, size_t *ret_len, int repl_delim, const char *fmt, ...);
 
 int event_handler_fout(struct trace_context_s *context, int event_type) {
-    int rv, fd;
+    int rv;
     size_t len;
     trace_frame_t *frame;
     trace_request_t *request;
@@ -26,9 +26,7 @@ int event_handler_fout(struct trace_context_s *context, int event_type) {
     len = 0;
     switch (event_type) {
         case PHPSPY_TRACE_EVENT_INIT:
-            try(rv, event_handler_fout_open(&fd));
             udata = calloc(1, sizeof(event_handler_fout_udata_t));
-            udata->fd = fd;
             udata->buf_size = opt_fout_buffer_size + 1; /* + 1 for null char */
             udata->buf = malloc(udata->buf_size);
             udata->cur = udata->buf;
@@ -136,7 +134,6 @@ int event_handler_fout(struct trace_context_s *context, int event_type) {
             try(rv, event_handler_fout_write(udata));
             break;
         case PHPSPY_TRACE_EVENT_DEINIT:
-            close(udata->fd);
             free(udata->buf);
             free(udata);
             break;
@@ -152,10 +149,10 @@ static int event_handler_fout_write(event_handler_fout_udata_t *udata) {
         /* nothing to write */
     } else {
         if (in_pgrep_mode) {
-            return pgrep_mode_output_write(udata->buf, write_len);
+            return pgrep_mode_output_write(output_fd, udata->buf, write_len);
         }
 
-        if (write(udata->fd, udata->buf, write_len) != write_len) {
+        if (write(output_fd, udata->buf, write_len) != write_len) {
             log_error("event_handler_fout: Write failed (%s)\n", errno != 0 ? strerror(errno) : "partial");
             return PHPSPY_ERR;
         }
@@ -211,4 +208,16 @@ int event_handler_fout_open(int *fd) {
     }
     *fd = tfd;
     return PHPSPY_OK;
+}
+
+
+int init_output_fd(void) {
+    return event_handler_fout_open(&output_fd);
+}
+
+void deinit_output_fd(void){
+    if (output_fd > 0) {
+        close(output_fd);
+        output_fd = -1;
+    }
 }

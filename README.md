@@ -119,8 +119,6 @@ All with no changes to your application and minimal overhead.
       -v, --version                      Print phpspy version and exit
 
     Experimental options:
-      -j, --event-handler=<handler>      Set event handler (fout, callgrind)
-                                           (default: fout)
       -S, --pause-process                Pause process while reading stacktrace
                                            (unsafe for production!)
       -e, --peek-var=<varspec>           Peek at the contents of the var located
