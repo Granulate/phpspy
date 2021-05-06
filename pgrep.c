@@ -121,13 +121,23 @@ static void pgrep_for_pids() {
 
 static void *run_work_thread(void *arg) {
     int worker_num;
+    int main_pid_rv;
+    pid_t pid;
     worker_num = (long)arg;
     while (!done) {
         if (wait_for_turn('c')) break;
         attached_pids[worker_num] = avail_pids[--avail_pids_count];
         pthread_cond_signal(&can_produce);
         pthread_mutex_unlock(&mutex);
-        main_pid(attached_pids[worker_num]);
+        pid = attached_pids[worker_num];
+        main_pid_rv = main_pid(pid);
+
+        /* PHPSPY_ERR_PID_DEAD sometimes passed orred with other error */
+        if (main_pid_rv != PHPSPY_OK && (main_pid_rv & PHPSPY_ERR_PID_DEAD) == 0) {
+            log_error("error: pgrep mode: main_pid routine returned non ok status and PID (%d) is not dead, rv = %d, errno - %d\n",
+                      pid, main_pid_rv, errno);
+        }
+
         attached_pids[worker_num] = 0;
     }
     return NULL;
