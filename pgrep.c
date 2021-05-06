@@ -20,7 +20,7 @@ static int install_sigusr2_handler(void);
 static void handle_sigusr2(int signal);
 static int fetch_current_timestamp(char *buf, size_t sz);
 static void *run_write_output_thread(void *arg);
-static int drain_pipe_to_file(void);
+static int drain_pipe_to_file(int check_for_done);
 
 static int *avail_pids = NULL;
 static int *attached_pids = NULL;
@@ -87,7 +87,7 @@ int main_pgrep() {
     deinit_work_threads();
 
     close(output_pipe[1]); /* First, close write fd to the pipe so no more stacks will be written */
-    drain_pipe_to_file(); /* Drain remaining stacks and free the buffers */
+    drain_pipe_to_file(0); /* Drain remaining stacks and free the buffers */
     close(output_pipe[0]);
     deinit_output_fd();
 
@@ -356,11 +356,11 @@ static void rotate_output(void) {
     }
 }
 
-static int drain_pipe_to_file(void) {
+static int drain_pipe_to_file(int check_for_done) {
     int rv = 0;
 
     write_msg_t msg;
-    while ((rv = read(output_pipe[0], &msg, sizeof(msg))) != -1 && !should_rotate) {
+    while ((rv = read(output_pipe[0], &msg, sizeof(msg))) != -1 && !should_rotate && (!check_for_done || !done)) {
         if (rv == 0) { /* EOF */
             return PHPSPY_OK;
         }
@@ -410,7 +410,7 @@ static void *run_write_output_thread(void *arg) {
             }
             continue;
         }
-        drain_pipe_to_file();
+        drain_pipe_to_file(1);
     }
 
     return NULL;
