@@ -28,6 +28,7 @@ int opt_filter_negate = 0;
 int opt_verbose_fields_pid = 0;
 int opt_verbose_fields_ts = 0;
 int opt_verbose_fields_phpv = 0;
+int opt_verbose_fields_comm = 0;
 int (*opt_event_handler)(struct trace_context_s *context, int event_type) = event_handler_fout;
 int opt_continue_on_error = 0;
 int opt_fout_buffer_size = 4096;
@@ -55,6 +56,7 @@ static void varpeek_add(char *varspec);
 static void glopeek_add(char *glospec);
 static int copy_proc_mem(pid_t pid, const char *what, void *raddr, void *laddr, size_t size);
 static void try_get_php_version(trace_target_t *target);
+static int get_comm_pid(pid_t pid, char *buf, size_t buf_size);
 
 #ifdef USE_ZEND
 static int do_trace(trace_context_t *context);
@@ -306,9 +308,11 @@ static void parse_opts(int argc, char **argv) {
                         case 'p': opt_verbose_fields_pid = 1; break;
                         case 't': opt_verbose_fields_ts  = 1; break;
                         case 'v': opt_verbose_fields_phpv  = 1; break;
+                        case 'c': opt_verbose_fields_comm = 1; break;
                         case 'P': opt_verbose_fields_pid = 0; break;
                         case 'T': opt_verbose_fields_ts  = 0; break;
-                        case 'V': opt_verbose_fields_phpv = 1; break;
+                        case 'V': opt_verbose_fields_phpv = 0; break;
+                        case 'C': opt_verbose_fields_comm = 0; break;
                     }
                 }
                 break;
@@ -353,6 +357,7 @@ int main_pid(pid_t pid) {
 
     memset(&context, 0, sizeof(trace_context_t));
     context.target.pid = pid;
+    get_comm_pid(pid, context.target.comm, sizeof(context.target.comm));
     context.event_handler = opt_event_handler;
     try(rv, find_addresses(&context.target));
     try(rv, context.event_handler(&context, PHPSPY_TRACE_EVENT_INIT));
@@ -794,6 +799,55 @@ void log_error(const char *fmt, ...) {
         va_start(args, fmt);
         vfprintf(stderr, fmt, args);
     }
+}
+
+static int get_comm_pid(pid_t pid, char *buf, size_t buf_size) {
+    char proc_fs_path[PATH_MAX];
+    char *line;
+    ssize_t fread_res;
+    size_t comm_len;
+    size_t line_len = 0;
+
+    FILE *f = NULL;
+    snprintf(proc_fs_path, PATH_MAX, "/proc/%d/comm", pid);
+
+    f = fopen(proc_fs_path, "rb");
+    if (f == NULL) {
+        log_error("Couldn't read comm of pid %d - errno %d\n", pid, errno);
+        goto error;
+    }
+
+    fread_res = getline(&line, &line_len, f);
+    if (fread_res == -1) {
+        log_error("Couldn't read %s file - errno %d\n", proc_fs_path, pid);
+        goto error;
+    }
+    comm_len = (size_t) fread_res - 1; /* remove \n delimiter */
+
+
+#define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
+    /* Copy up to comm_len / buf_size the min between them */
+    memcpy(buf, line, MIN(buf_size, comm_len));
+    free(line);
+    fclose(f);
+
+    /* Force null termination */
+    if (comm_len >= buf_size) {
+        buf[buf_size] = '\0';
+    } else {
+        buf[comm_len] = '\0';
+    }
+
+    return PHPSPY_OK;
+
+error:
+    if (f != NULL) {
+        fclose(f);
+    }
+
+    strncpy(buf, "UNKNOWN-COMM", buf_size);
+    buf[buf_size] = '\0'; /* terminate just in case because strncpy doesn't */
+    return PHPSPY_ERR;
 }
 
 /* TODO figure out a way to make this cleaner */
