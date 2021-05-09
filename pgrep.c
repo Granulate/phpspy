@@ -132,7 +132,7 @@ static void *run_work_thread(void *arg) {
         pid = attached_pids[worker_num];
         main_pid_rv = main_pid(pid);
 
-        /* PHPSPY_ERR_PID_DEAD sometimes passed orred with other error */
+        /* PHPSPY_ERR_PID_DEAD is sometimes passed ORred with other error(s) */
         if (main_pid_rv != PHPSPY_OK && (main_pid_rv & PHPSPY_ERR_PID_DEAD) == 0) {
             log_error("error: pgrep mode: main_pid routine returned non ok status and PID (%d) is not dead, rv = %d, errno - %d\n",
                       pid, main_pid_rv, errno);
