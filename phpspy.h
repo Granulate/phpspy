@@ -45,8 +45,9 @@
 
 #include <uthash.h>
 
-#define try(__rv, __call)       do { if (((__rv) = (__call)) != 0) return (__rv); } while(0)
-#define try_break(__rv, __call) do { if (((__rv) = (__call)) != 0) break;         } while(0)
+#define try(__rv, __call)         do { if (((__rv) = (__call)) != 0) return (__rv); } while(0)
+#define try_break(__rv, __call)   do { if (((__rv) = (__call)) != 0) break;         } while(0)
+#define run_on_pause_mode(__call) do { if (opt_pause) {(__call); }                  } while(0)
 
 #define PHPSPY_VERSION "0.6.0"
 #define PHPSPY_MIN(a, b) ((a) < (b) ? (a) : (b))

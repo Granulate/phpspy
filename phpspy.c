@@ -54,7 +54,7 @@ static void calc_sleep_time(struct timespec *end, struct timespec *start, struct
 static void varpeek_add(char *varspec);
 static void glopeek_add(char *glospec);
 static int copy_proc_mem(pid_t pid, const char *what, void *raddr, void *laddr, size_t size);
-static void try_get_php_version(trace_target_t *target);
+static int try_get_php_version(trace_target_t *target);
 
 #ifdef USE_ZEND
 static int do_trace(trace_context_t *context);
@@ -361,7 +361,11 @@ int main_pid(pid_t pid) {
     do_trace_ptr = do_trace;
     #else
 
-    try_get_php_version(&context.target);
+    rv = try_get_php_version(&context.target);
+    if (rv != PHPSPY_OK) {
+        return rv;
+    }
+
     if (strcmp("70", context.target.phpv) == 0) {
         do_trace_ptr = do_trace_70;
     } else if (strcmp("71", context.target.phpv) == 0) {
@@ -687,7 +691,7 @@ static int copy_proc_mem(pid_t pid, const char *what, void *raddr, void *laddr, 
     struct iovec remote[1];
 
     if (raddr == NULL) {
-        log_error("copy_proc_mem: Not copying %s; raddr is NULL\n", what);
+        run_on_pause_mode(log_error("copy_proc_mem: Not copying %s; raddr is NULL\n", what));
         return PHPSPY_ERR;
     }
 
@@ -698,17 +702,19 @@ static int copy_proc_mem(pid_t pid, const char *what, void *raddr, void *laddr, 
 
     if (process_vm_readv(pid, local, 1, remote, 1, 0) == -1) {
         if (errno == ESRCH) { /* No such process */
-            perror("process_vm_readv");
+            if (!in_pgrep_mode) {
+                perror("process_vm_readv");
+            }
             return PHPSPY_ERR | PHPSPY_ERR_PID_DEAD;
         }
-        log_error("copy_proc_mem: Failed to copy %s; err=%s raddr=%p size=%lu\n", what, strerror(errno), raddr, size);
+        run_on_pause_mode(log_error("copy_proc_mem: Failed to copy %s; err=%s raddr=%p size=%lu\n", what, strerror(errno), raddr, size));
         return PHPSPY_ERR;
     }
 
     return PHPSPY_OK;
 }
 
-static void try_get_php_version(trace_target_t *target) {
+static int try_get_php_version(trace_target_t *target) {
     struct _zend_module_entry basic_functions_module;
     char version_cmd[256];
     char phpv[4];
@@ -739,12 +745,16 @@ static void try_get_php_version(trace_target_t *target) {
             pid, pid, pid, pid
         );
         if ((pcmd = popen(version_cmd, "r")) == NULL) {
+            if (errno == ENOENT) {
+                return PHPSPY_ERR_PID_DEAD;
+            }
+
             perror("try_get_php_version: popen");
-            return;
+            return PHPSPY_ERR;
         } else if (fread(&phpv, sizeof(char), 3, pcmd) != 3) {
             log_error("try_get_php_version: Could not detect PHP version\n");
             pclose(pcmd);
-            return;
+            return PHPSPY_ERR;
         }
         pclose(pcmd);
     }
@@ -756,7 +766,12 @@ static void try_get_php_version(trace_target_t *target) {
     else if (strncmp(phpv, "7.4", 3) == 0) strcpy(target->phpv, "74");
     else if (strncmp(phpv, "8.0", 3) == 0) strcpy(target->phpv, "80");
     else if (strncmp(phpv, "8.1", 3) == 0) strcpy(target->phpv, "80");
-    else log_error("try_get_php_version: Unrecognized PHP version\n");
+    else {
+        log_error("try_get_php_version: Unrecognized PHP version\n");
+        return PHPSPY_ERR;
+    };
+
+    return PHPSPY_OK;
 }
 
 uint64_t phpspy_zend_inline_hash_func(const char *str, size_t len) {
