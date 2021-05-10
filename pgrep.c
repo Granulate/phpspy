@@ -1,11 +1,6 @@
 #include "phpspy.h"
 #include <poll.h>
 
-typedef struct __attribute__((packed)) write_msg_s {
-    const char *buf;
-    size_t buf_size;
-} write_msg_t;
-
 static int wait_for_turn(char producer_or_consumer);
 static void pgrep_for_pids();
 static void *run_work_thread(void *arg);
@@ -111,10 +106,10 @@ static int init_pgrep_output_pipe(void) {
 int pgrep_mode_output_write(const char *buf, size_t buf_size) {
     int rv = PHPSPY_OK;
 
-    write_msg_t msg;
-    msg.buf = buf;
-    msg.buf_size = buf_size;
-    if ((rv = write(output_pipe[1], &msg, sizeof(msg)) != sizeof(msg))) {
+    struct iovec io_vec;
+    io_vec.iov_base = (void *) buf;
+    io_vec.iov_len = buf_size;
+    if ((rv = write(output_pipe[1], &io_vec, sizeof(io_vec)) != sizeof(io_vec))) {
         log_error("FATAL! couldn't write message in a single chunk to the pipe\n");
     }
     return rv;
@@ -359,22 +354,22 @@ static void rotate_output(void) {
 static int drain_pipe_to_file(int check_for_done) {
     int rv = 0;
 
-    write_msg_t msg;
-    while ((rv = read(output_pipe[0], &msg, sizeof(msg))) != -1 && !should_rotate && (!check_for_done || !done)) {
+    struct iovec io_vec;
+    while ((rv = read(output_pipe[0], &io_vec, sizeof(io_vec))) != -1 && !should_rotate && (!check_for_done || !done)) {
         if (rv == 0) { /* EOF */
             return PHPSPY_OK;
         }
 
-        if (rv != sizeof(msg)) {
-            log_error("FATAL! read %d bytes from the pipe which is not a full write_msg_t (sizeof = %d)\n", rv, sizeof(msg));
+        if (rv != sizeof(io_vec)) {
+            log_error("FATAL! read %d bytes from the pipe which is not a full write_msg_t (sizeof = %d)\n", rv, sizeof(io_vec));
             done = 1; /* can't recover from this stage, but really should never happen */
             return PHPSPY_ERR;
         }
 
-        if (write(output_fd, msg.buf, msg.buf_size) != (int) msg.buf_size) {
+        if (write(output_fd, io_vec.iov_base, io_vec.iov_len) != (int)io_vec.iov_len) {
             log_error("event_handler_fout: Write failed (%s)\n", errno != 0 ? strerror(errno) : "partial");
         }
-        free((void *) msg.buf); /* Allocated at event_handler_fout at EVENT_STACK_BEGIN */
+        free(io_vec.iov_base); /* Allocated at event_handler_fout at EVENT_STACK_BEGIN */
     }
 
     if (rv != 0 && errno != EAGAIN) {
