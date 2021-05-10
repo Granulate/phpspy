@@ -18,7 +18,7 @@ char opt_frame_delim = '\n';
 char opt_trace_delim = '\n';
 uint64_t opt_trace_limit = 0;
 long opt_time_limit_ms = 0;
-char *opt_path_output = "-";
+char *opt_path_output = STDOUT_OUTPUT;
 char *opt_path_child_out = "phpspy.%d.out";
 char *opt_path_child_err = "phpspy.%d.err";
 char *opt_phpv = "auto";
@@ -155,8 +155,6 @@ void usage(FILE *fp, int exit_code) {
     fprintf(fp, "  -v, --version                      Print phpspy version and exit\n");
     fprintf(fp, "\n");
     fprintf(fp, "Experimental options:\n");
-    fprintf(fp, "  -j, --event-handler=<handler>      Set event handler (fout, callgrind)\n");
-    fprintf(fp, "                                       (default: fout)\n");
     fprintf(fp, "  -S, --pause-process                Pause process while reading stacktrace\n");
     fprintf(fp, "                                       (unsafe for production!)\n");
     fprintf(fp, "  -e, --peek-var=<varspec>           Peek at the contents of the var located\n");
@@ -171,6 +169,8 @@ void usage(FILE *fp, int exit_code) {
     fprintf(fp, "                                       post|get|cookie|server|files|globals\n");
     fprintf(fp, "                                       e.g., server.REQUEST_TIME\n");
     fprintf(fp, "  -t, --top                          Show dynamic top-like output\n");
+    fprintf(fp, "  -Y, --signaled-output              Signaled output (write output only upon SIGUSR2)\n");
+
     cleanup();
     exit(exit_code);
 }
@@ -231,7 +231,6 @@ static void parse_opts(int argc, char **argv) {
         { "filter-negate",         required_argument, NULL, 'F' },
         { "verbose-fields",        required_argument, NULL, 'd' },
         { "continue-on-error",     no_argument,       NULL, 'c' },
-        { "event-handler",         required_argument, NULL, 'j' },
         { "comment",               required_argument, NULL, '#' },
         { "nothing",               no_argument,       NULL, '@' },
         { "version",               no_argument,       NULL, 'v' },
@@ -251,7 +250,7 @@ static void parse_opts(int argc, char **argv) {
     while (
         optind < argc
         && argv[optind][0] == '-'
-        && (c = getopt_long(argc, argv, "hp:P:T:te:s:H:V:l:i:n:r:mo:O:E:x:a:1b:f:F:d:cj:#:@vSe:g:t", long_opts, NULL)) != -1
+        && (c = getopt_long(argc, argv, "hp:P:T:te:s:H:V:l:i:n:r:mo:O:E:x:a:1b:f:F:d:c:#:@vSe:g:t", long_opts, NULL)) != -1
     ) {
         switch (c) {
             case 'h': usage(stdout, 0); break;
@@ -313,17 +312,6 @@ static void parse_opts(int argc, char **argv) {
                 }
                 break;
             case 'c': opt_continue_on_error = 1; break;
-            case 'j':
-                if (strcmp(optarg, "fout") == 0) {
-                    opt_event_handler = event_handler_fout;
-                } else if (strcmp(optarg, "callgrind") == 0) {
-                    opt_event_handler = event_handler_callgrind;
-                } else {
-                    log_error("parse_opts: Expected 'fout' or 'callgrind' for `--event-handler`\n\n");
-                    usage(stderr, 1);
-                }
-                break;
-            case '#': break;
             case '@': break;
             case 'v':
                 printf(
@@ -395,6 +383,12 @@ int main_pid(pid_t pid) {
         clock_add(stop_time, &limit_time, stop_time);
     }
 
+    if (!in_pgrep_mode) { /* in pgrep mode the initialization happends there so we share the same fd and prevent races */
+        if (init_output_fd() != PHPSPY_OK) {
+            goto done;
+        }
+    }
+
     while (!done) {
         /* record start_time */
         clock_get(&start_time);
@@ -432,12 +426,17 @@ int main_pid(pid_t pid) {
         nanosleep(&sleep_time, NULL);
     }
 
+done:
     context.event_handler(&context, PHPSPY_TRACE_EVENT_DEINIT);
 
     /* in pgrep mode, trigger done condition if we went over the trace limit.
        it is ok for multiple threads to call this. */
     if (in_pgrep_mode && opt_trace_limit > 0 && trace_count >= opt_trace_limit) {
         write_done_pipe();
+    }
+
+    if (!in_pgrep_mode) {
+        deinit_output_fd();
     }
 
     /* TODO proper signal handling for non-pgrep modes */
@@ -521,7 +520,7 @@ static int unpause_pid(pid_t pid) {
 static void redirect_child_stdio(int proc_fd, char *opt_path) {
     char *redir_path;
     FILE *redir_file;
-    if (strcmp(opt_path, "-") == 0) {
+    if (strcmp(opt_path, STDOUT_OUTPUT) == 0) {
         return;
     } else if (strstr(opt_path, "%d") != NULL) {
         if (asprintf(&redir_path, opt_path, getpid()) < 0) {
