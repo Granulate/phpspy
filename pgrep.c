@@ -1,5 +1,9 @@
 #include "phpspy.h"
 #include <poll.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <dirent.h>
+#include <ctype.h>
 
 static int wait_for_turn(char producer_or_consumer);
 static void pgrep_for_pids();
@@ -139,31 +143,123 @@ static int wait_for_turn(char producer_or_consumer){
     return 0;
 }
 
+static int read_file(const char *path, void *buf, size_t size) {
+    int rv = PHPSPY_OK;
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) {
+        if (errno != ENOENT) {
+            perror("Can't open file for reading");
+        }
+        return -PHPSPY_ERR;
+    }
+
+    rv = fread(buf, 1, size, f);
+    if (ferror(f)) {
+        if (errno != ENOENT) {
+            perror("Couldn't read data from file");
+        }
+
+        rv = -PHPSPY_ERR;
+    }
+
+    fclose(f);
+    return rv;
+}
+
+static int is_number(const char *str) {
+    size_t str_l = strlen(str);
+    int i = 0;
+
+    for (i = 0; i < (int) str_l; ++i) {
+        if (!isdigit(str[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int try_find_match_in_proc_fs(pid_t pid, const char *proc_fs_f_name) {
+    char proc_path[PATH_MAX];
+    char proc_fs_read_buf[4096] = {0};
+    char *match;
+    /* First, try argv[0] */
+    snprintf(proc_path, PATH_MAX, "/proc/%d/%s", pid, proc_fs_f_name);
+    /* Using strstr is ok because cmdline is null spitted between the args. */
+    if (read_file(proc_path, proc_fs_read_buf, sizeof(proc_fs_read_buf)) < 0) {
+        if (errno != ENOENT) {
+            perror("Couldn't read proc fs file");
+        }
+        return -1;
+    }
+
+    if ((match = strstr(proc_fs_read_buf, opt_pgrep_args)) != NULL) {
+        return 0;
+    }
+
+    return 1;
+}
+
+static int get_php_procs(pid_t procs_arr[], size_t procs_size)
+{
+    DIR *dp;
+    pid_t pid;
+    struct dirent *ep;
+    size_t num_procs_matched = 0;
+
+
+    dp = opendir("/proc");
+    if (dp == NULL) {
+        perror("Couldn't open '/proc' directory");
+        return -PHPSPY_ERR;
+    }
+
+    while ((ep = readdir(dp)) && (num_procs_matched < procs_size)) {
+        if (!is_number(ep->d_name)) {
+            continue;
+        }
+        pid = atoi(ep->d_name);
+
+        /* Matching against /proc/<pid>/cmdline is ok because the arguments are null separated */
+        if (try_find_match_in_proc_fs(pid, "cmdline") == 0) {
+            procs_arr[num_procs_matched++] = pid;
+            continue;
+        }
+        if (try_find_match_in_proc_fs(pid, "comm") == 0) {
+            procs_arr[num_procs_matched++] = pid;
+        }
+    }
+    (void)closedir(dp);
+
+    return (int) num_procs_matched;
+}
+
 static void pgrep_for_pids() {
-    FILE *pcmd;
-    char *pgrep_cmd;
-    char line[64];
     int pid;
     int found;
+    int num_procs_matched;
     struct timespec timeout;
-    if (asprintf(&pgrep_cmd, "pgrep %s", opt_pgrep_args) < 0) {
-        errno = ENOMEM;
-        perror("asprintf");
-        exit(1);
+    int i;
+    pid_t *procs_arr = malloc(sizeof(pid_t) * opt_num_workers);
+
+    if (procs_arr == NULL) {
+        log_error("FATAL: pgrep mode: can't allocate pid search buffer\n");
+        return;
     }
-    while (!done) {
+
+    while (!done){
         if (wait_for_turn('p')) break;
         found = 0;
-        if ((pcmd = popen(pgrep_cmd, "r")) != NULL) {
-            while (avail_pids_count < opt_num_workers && fgets(line, sizeof(line), pcmd) != NULL) {
-                if (strlen(line) < 1 || *line == '\n') continue;
-                pid = atoi(line);
-                if (is_already_attached(pid)) continue;
+        num_procs_matched = get_php_procs(procs_arr, opt_num_workers);
+        if (num_procs_matched > 0) {
+            for (i = 0; i < num_procs_matched && avail_pids_count < opt_num_workers; i++) {
+                pid = procs_arr[i];
+                if (is_already_attached(pid))
+                    continue;
                 avail_pids[avail_pids_count++] = pid;
                 found += 1;
             }
-            pclose(pcmd);
         }
+
         if (found > 0) {
             pthread_cond_broadcast(&can_consume);
         } else {
@@ -177,7 +273,7 @@ static void pgrep_for_pids() {
         }
         pthread_mutex_unlock(&mutex);
     }
-    free(pgrep_cmd);
+    free(procs_arr);
 }
 
 static void *run_work_thread(void *arg) {
