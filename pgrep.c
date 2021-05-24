@@ -20,6 +20,10 @@ static void handle_sigusr2(int signal);
 static int fetch_current_timestamp(char *buf, size_t sz);
 static void *run_write_output_thread(void *arg);
 static int drain_pipe_to_file(int check_for_done);
+static int get_php_procs(pid_t procs_arr[], size_t procs_size);
+static int read_file(const char *path, void *buf, size_t size);
+static int is_number(const char *str);
+static int try_find_match_in_proc_fs(pid_t pid, const char *proc_fs_f_name);
 
 static int *avail_pids = NULL;
 static int *attached_pids = NULL;
@@ -182,18 +186,18 @@ static int try_find_match_in_proc_fs(pid_t pid, const char *proc_fs_f_name) {
     char proc_path[PATH_MAX];
     char proc_fs_read_buf[4096] = {0};
     char *match;
-    /* First, try argv[0] */
     snprintf(proc_path, PATH_MAX, "/proc/%d/%s", pid, proc_fs_f_name);
-    /* Using strstr is ok because cmdline is null spitted between the args. */
+
     if (read_file(proc_path, proc_fs_read_buf, sizeof(proc_fs_read_buf)) < 0) {
         if (errno != ENOENT) {
             perror("Couldn't read proc fs file");
         }
         return -1;
     }
-    /* Ensure null termination */
+    /* Ensure null termination so libc string functions will work properly */
     proc_fs_read_buf[sizeof(proc_fs_read_buf) - 1] = '\0';
 
+    /* Using strstr is ok also for cmdline because cmdline is null splitted between the args. */
     if ((match = strstr(proc_fs_read_buf, opt_pgrep_args)) != NULL) {
         return 0;
     }
@@ -201,13 +205,11 @@ static int try_find_match_in_proc_fs(pid_t pid, const char *proc_fs_f_name) {
     return 1;
 }
 
-static int get_php_procs(pid_t procs_arr[], size_t procs_size)
-{
+static int get_php_procs(pid_t procs_arr[], size_t procs_size) {
     DIR *dp;
     pid_t pid;
     struct dirent *ep;
     size_t num_procs_matched = 0;
-
 
     dp = opendir("/proc");
     if (dp == NULL) {
@@ -221,12 +223,13 @@ static int get_php_procs(pid_t procs_arr[], size_t procs_size)
         }
         pid = atoi(ep->d_name);
 
-        /* Matching against /proc/<pid>/cmdline is ok because the arguments are null separated */
-        if (try_find_match_in_proc_fs(pid, "cmdline") == 0) {
+        /* First try with comm, then fallback to "argv[0]", like pgrep default behavior */
+        if (try_find_match_in_proc_fs(pid, "comm") == 0) {
             procs_arr[num_procs_matched++] = pid;
             continue;
         }
-        if (try_find_match_in_proc_fs(pid, "comm") == 0) {
+
+        if (try_find_match_in_proc_fs(pid, "cmdline") == 0) {
             procs_arr[num_procs_matched++] = pid;
         }
     }
