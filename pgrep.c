@@ -191,6 +191,8 @@ static int try_find_match_in_proc_fs(pid_t pid, const char *proc_fs_f_name) {
         }
         return -1;
     }
+    /* Ensure null termination */
+    proc_fs_read_buf[sizeof(proc_fs_read_buf) - 1] = '\0';
 
     if ((match = strstr(proc_fs_read_buf, opt_pgrep_args)) != NULL) {
         return 0;
